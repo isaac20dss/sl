@@ -34,7 +34,14 @@ export function Diagnostics() {
         } catch {
           /* empty body */
         }
-        return { status: res.status, msg: res.ok ? "" : (body?.error?.message ?? ""), body };
+        // On a 429 the only useful number is how long the app is locked out.
+        const retryAfter = res.status === 429 ? res.headers.get("retry-after") : null;
+        const detail = res.ok ? "" : (body?.error?.message ?? "");
+        return {
+          status: res.status,
+          msg: retryAfter ? `bloqueado por mais ${retryAfter}s` : detail,
+          body,
+        };
       };
 
       const scopes = grantedScopes();
