@@ -41,13 +41,22 @@ export async function spotifyGet<T>(url: string): Promise<T> {
     }
 
     if (res.status === 429) {
-      const header = Number(res.headers.get("retry-after") ?? "1");
-      const retryAfter = Number.isFinite(header) ? header : 1;
+      // Retry-After is not exposed to JavaScript on a cross-origin response, so a
+      // missing header says nothing about how long the block lasts — it used to read
+      // as "1 second" and trigger five more calls, spending quota already exhausted.
+      const header = Number(res.headers.get("retry-after"));
+      const retryAfter = Number.isFinite(header) && header > 0 ? header : 0;
+
       // Waiting minutes inside a click handler helps nobody — say how long instead.
-      if (retryAfter > 30) {
-        throw new SpotifyError(429, `cota estourada, tente de novo em ${retryAfter}s`);
+      if (retryAfter > 30 || attempt >= 1) {
+        throw new SpotifyError(
+          429,
+          retryAfter
+            ? `cota estourada, tente de novo em ${retryAfter}s`
+            : "cota deste tipo de requisição estourada — espere antes de tentar de novo",
+        );
       }
-      await sleep(retryAfter * 1000 + 250);
+      await sleep((retryAfter || 2) * 1000 + 250);
       continue;
     }
 

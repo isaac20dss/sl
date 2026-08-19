@@ -11,11 +11,37 @@ import {
 import { Diagnostics } from "./Diagnostics";
 
 /**
- * Survives remounts for the lifetime of the tab: leaving a game and coming back
- * used to re-list every playlist, and those repeated calls are what pushes an
- * already tight Spotify quota into a 429.
+ * The playlist listing is the scarcest call in the app: its quota runs out long
+ * before /me or /me/tracks do. One successful listing is therefore kept for the
+ * whole browser session — in memory for remounts, in sessionStorage for reloads —
+ * so refreshing the page costs nothing. It dies with the tab, like the tokens.
  */
+const CACHE_KEY = "songless_playlists";
 let cachedPlaylists: SpotifyPlaylist[] | null = null;
+
+function readCache(): SpotifyPlaylist[] | null {
+  if (cachedPlaylists) return cachedPlaylists;
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as SpotifyPlaylist[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    cachedPlaylists = parsed;
+    return parsed;
+  } catch {
+    sessionStorage.removeItem(CACHE_KEY);
+    return null;
+  }
+}
+
+function writeCache(list: SpotifyPlaylist[]) {
+  cachedPlaylists = list;
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify(list));
+  } catch {
+    // storage full or blocked — the in-memory copy still covers this tab
+  }
+}
 
 interface Props {
   error?: string;
@@ -38,8 +64,9 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
   useEffect(() => {
     alive.current = true;
 
-    if (cachedPlaylists) {
-      setPlaylists(cachedPlaylists);
+    const cached = readCache();
+    if (cached) {
+      setPlaylists(cached);
       return () => {
         alive.current = false;
       };
@@ -55,7 +82,7 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
         setPlaylists((prev) => {
           if (!prev) return prev;
           const next = prev.map((p) => (p.id === LIKED_ID ? { ...p, total } : p));
-          if (cachedPlaylists) cachedPlaylists = next;
+          if (cachedPlaylists) writeCache(next);
           return next;
         });
       })
@@ -69,7 +96,7 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
           if (!alive.current) return;
           setPlaylists((prev) => {
             const next = [...(prev ?? [likedCard()]), ...batch];
-            cachedPlaylists = next;
+            writeCache(next);
             return next;
           });
         });
@@ -117,7 +144,7 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
         setPlaylists((prev) => {
           if (!prev) return prev;
           const next = prev.map((p) => (p.id === playlist.id ? { ...p, total } : p));
-          if (cachedPlaylists) cachedPlaylists = next;
+          if (cachedPlaylists) writeCache(next);
           return next;
         });
       })
