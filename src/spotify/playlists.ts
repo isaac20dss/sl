@@ -1,4 +1,4 @@
-import { spotifyGet } from "../auth/spotifyClient";
+import { SpotifyError, spotifyGet } from "../auth/spotifyClient";
 import type { Track } from "../game/types";
 
 const API = "https://api.spotify.com/v1";
@@ -29,7 +29,7 @@ export async function fetchAllPlaylists(): Promise<SpotifyPlaylist[]> {
         id: p.id,
         name: p.name ?? "(sem nome)",
         imageUrl: p.images?.[0]?.url ?? "",
-        total: p.tracks?.total ?? 0,
+        total: p.items?.total ?? p.tracks?.total ?? 0,
         owner: p.owner?.display_name ?? "",
       });
     }
@@ -41,11 +41,11 @@ export async function fetchAllPlaylists(): Promise<SpotifyPlaylist[]> {
 
 /**
  * Real track count for one playlist.
- * `/me/playlists` sometimes reports `tracks.total: 0`, so the picker backfills
- * the count from the tracks endpoint (1 item, only the `total` field).
+ * `/me/playlists` sometimes reports the total as 0, so the picker backfills
+ * the count from the items endpoint (1 item, only the `total` field).
  */
 export async function fetchPlaylistTotal(playlistId: string): Promise<number> {
-  const base = `${API}/playlists/${playlistId}/tracks?limit=1`;
+  const base = `${API}/playlists/${playlistId}/items?limit=1`;
 
   const filtered = await spotifyGet<{ total?: number }>(`${base}&fields=total`);
   if (filtered.total) return filtered.total;
@@ -55,17 +55,22 @@ export async function fetchPlaylistTotal(playlistId: string): Promise<number> {
   return plain.total ?? 0;
 }
 
-const FIELDS =
-  "next,items(track(id,name,is_local,external_ids(isrc),artists(name),album(images)))";
+/**
+ * Since the February 2026 API change the playlist contents live under `/items`,
+ * and each entry carries the track as `item` — `track` survives as a deprecated
+ * alias. Both are requested so the reader keeps working whichever one is served.
+ */
+const ITEM_SHAPE = "id,name,is_local,external_ids(isrc),artists(name),album(images)";
+const FIELDS = `next,items(is_local,item(${ITEM_SHAPE}),track(${ITEM_SHAPE}))`;
 
 export interface PlaylistTracks {
   tracks: Track[]; // playable candidates (have an id and an ISRC)
   seen: number; // every non-null track found, used for the "left out" stats
 }
 
-function toTrack(raw: any): Track | null {
+function toTrack(raw: any, isLocalEntry = false): Track | null {
   if (!raw?.id) return null;
-  if (raw.is_local === true) return null;
+  if (isLocalEntry || raw.is_local === true) return null;
 
   const isrc: string | undefined = raw.external_ids?.isrc;
   if (!isrc) return null;
@@ -93,19 +98,33 @@ export async function fetchPlaylistTracks(
   playlistId: string,
   onProgress?: (loaded: number) => void,
 ): Promise<PlaylistTracks> {
-  let url: string | null =
-    `${API}/playlists/${playlistId}/tracks?limit=100&fields=${encodeURIComponent(FIELDS)}`;
+  // 50 is the maximum the items endpoint accepts.
+  const base = `${API}/playlists/${playlistId}/items?limit=50`;
+  let url: string | null = `${base}&fields=${encodeURIComponent(FIELDS)}`;
+  let filtered = true;
 
   const tracks: Track[] = [];
   let seen = 0;
 
   while (url) {
-    const page: Paged<any> = await spotifyGet<Paged<any>>(url);
-    for (const item of page.items ?? []) {
-      const raw = item?.track;
+    let page: Paged<any>;
+    try {
+      page = await spotifyGet<Paged<any>>(url);
+    } catch (error) {
+      // A rejected `fields` filter must not cost the whole playlist — ask again unfiltered.
+      if (filtered && error instanceof SpotifyError && error.status === 400) {
+        filtered = false;
+        url = base;
+        continue;
+      }
+      throw error;
+    }
+
+    for (const entry of page.items ?? []) {
+      const raw = entry?.item ?? entry?.track;
       if (!raw) continue; // removed / unavailable track
       seen++;
-      const track = toTrack(raw);
+      const track = toTrack(raw, entry?.is_local === true);
       if (track) tracks.push(track);
     }
     onProgress?.(tracks.length);
@@ -120,8 +139,8 @@ export const LIKED_ID = "__liked__";
 
 /**
  * Liked Songs as a playable list.
- * `/me/tracks` lives outside the `/playlists/{id}/tracks` family, which this
- * Spotify app is forbidden from reading (403 for every playlist, any token).
+ * `/me/tracks` was never touched by the February 2026 playlist migration, which
+ * is why this was the only readable source while the code still called `/tracks`.
  */
 export async function fetchLikedTracks(
   onProgress?: (loaded: number) => void,

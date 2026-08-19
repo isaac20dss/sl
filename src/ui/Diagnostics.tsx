@@ -61,11 +61,14 @@ export function Diagnostics() {
           "Playlist testada",
           `${target.name} · ${target.public ? "PÚBLICA" : "privada"} · dono ${target.owner?.display_name ?? "?"}`,
         );
-        push("tracks.total no resumo", String(target.tracks?.total ?? "(campo ausente)"));
-
-        const tracks = await call(`https://api.spotify.com/v1/playlists/${target.id}/tracks?limit=1`);
         push(
-          "GET /playlists/{id}/tracks",
+          "total no resumo",
+          String(target.items?.total ?? target.tracks?.total ?? "(campo ausente)"),
+        );
+
+        const tracks = await call(`https://api.spotify.com/v1/playlists/${target.id}/items?limit=1`);
+        push(
+          "GET /playlists/{id}/items",
           `${tracks.status}${tracks.msg ? ` — ${tracks.msg}` : ""}`,
           tracks.status === 200,
         );
