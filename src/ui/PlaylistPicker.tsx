@@ -10,6 +10,13 @@ import {
 } from "../spotify/playlists";
 import { Diagnostics } from "./Diagnostics";
 
+/**
+ * Survives remounts for the lifetime of the tab: leaving a game and coming back
+ * used to re-list every playlist, and those repeated calls are what pushes an
+ * already tight Spotify quota into a 429.
+ */
+let cachedPlaylists: SpotifyPlaylist[] | null = null;
+
 interface Props {
   error?: string;
   onPlay: (playlists: SpotifyPlaylist[]) => void;
@@ -31,16 +38,26 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
   useEffect(() => {
     alive.current = true;
 
-    // Liked Songs is the only source this Spotify app can still read, so it is
-    // shown immediately and never gated behind the playlist listing.
+    if (cachedPlaylists) {
+      setPlaylists(cachedPlaylists);
+      return () => {
+        alive.current = false;
+      };
+    }
+
+    // Liked Songs is read through a different endpoint than the playlists, so it
+    // is shown immediately and never gated behind the playlist listing.
     setPlaylists([likedCard()]);
 
     void fetchLikedTotal()
       .then((total) => {
         if (!alive.current) return;
-        setPlaylists((prev) =>
-          prev ? prev.map((p) => (p.id === LIKED_ID ? { ...p, total } : p)) : prev,
-        );
+        setPlaylists((prev) => {
+          if (!prev) return prev;
+          const next = prev.map((p) => (p.id === LIKED_ID ? { ...p, total } : p));
+          if (cachedPlaylists) cachedPlaylists = next;
+          return next;
+        });
       })
       .catch((e) => {
         if (alive.current) setLikedError(e instanceof Error ? e.message : String(e));
@@ -50,7 +67,11 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
       try {
         await fetchAllPlaylists((batch) => {
           if (!alive.current) return;
-          setPlaylists((prev) => [...(prev ?? [likedCard()]), ...batch]);
+          setPlaylists((prev) => {
+            const next = [...(prev ?? [likedCard()]), ...batch];
+            cachedPlaylists = next;
+            return next;
+          });
         });
       } catch (e) {
         if (!alive.current) return;
@@ -93,9 +114,12 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
     void fetchPlaylistTotal(playlist.id)
       .then((total) => {
         if (!alive.current) return;
-        setPlaylists((prev) =>
-          prev ? prev.map((p) => (p.id === playlist.id ? { ...p, total } : p)) : prev,
-        );
+        setPlaylists((prev) => {
+          if (!prev) return prev;
+          const next = prev.map((p) => (p.id === playlist.id ? { ...p, total } : p));
+          if (cachedPlaylists) cachedPlaylists = next;
+          return next;
+        });
       })
       .catch((e) => {
         // the deck does not depend on this count — surface the reason and move on
