@@ -1,5 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { resolvePreview } from "./_resolve";
+// The .js extension is required: package.json sets "type": "module", so the compiled
+// function runs as ESM on Vercel, where extensionless relative imports do not resolve.
+import { resolvePreview } from "./_resolve.js";
 
 /**
  * GET /api/preview?isrc=USRC17607839&artist=Queen&title=Bohemian%20Rhapsody
