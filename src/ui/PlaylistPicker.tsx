@@ -26,35 +26,10 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
   const [likedError, setLikedError] = useState<string>();
   const [query, setQuery] = useState("");
   const alive = useRef(true);
+  const counted = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     alive.current = true;
-
-    /** `/me/playlists` may report `tracks.total: 0` — ask the tracks endpoint instead. */
-    async function backfillTotals(list: SpotifyPlaylist[]) {
-      const queue = list.filter((p) => !p.total && p.id !== LIKED_ID).map((p) => p.id);
-      if (queue.length === 0) return;
-
-      setCounting(true);
-      const worker = async () => {
-        while (queue.length > 0 && alive.current) {
-          const id = queue.shift()!;
-          try {
-            const total = await fetchPlaylistTotal(id);
-            if (!alive.current) return;
-            setPlaylists((prev) =>
-              prev ? prev.map((p) => (p.id === id ? { ...p, total } : p)) : prev,
-            );
-          } catch (e) {
-            // the deck does not depend on this count — surface the reason and move on
-            console.warn("[songless] contagem falhou", id, e);
-            if (alive.current) setCountError(e instanceof Error ? e.message : String(e));
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: 6 }, worker));
-      if (alive.current) setCounting(false);
-    }
 
     // Liked Songs is the only source this Spotify app can still read, so it is
     // shown immediately and never gated behind the playlist listing.
@@ -73,10 +48,10 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
 
     (async () => {
       try {
-        const list = await fetchAllPlaylists();
-        if (!alive.current) return;
-        setPlaylists((prev) => [...(prev ?? [likedCard()]), ...list]);
-        await backfillTotals(list);
+        await fetchAllPlaylists((batch) => {
+          if (!alive.current) return;
+          setPlaylists((prev) => [...(prev ?? [likedCard()]), ...batch]);
+        });
       } catch (e) {
         if (!alive.current) return;
         if (e instanceof AuthError) {
@@ -105,12 +80,41 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
   );
   const totalTracks = chosen.reduce((sum, p) => sum + p.total, 0);
 
-  const toggle = (id: string) =>
+  /**
+   * Counting every playlist up front used to fire dozens of requests at once and
+   * got the whole session rate limited. The count is only needed for the playlists
+   * actually picked, so it is fetched one at a time, on selection.
+   */
+  const countIfNeeded = (playlist: SpotifyPlaylist) => {
+    if (playlist.total > 0 || playlist.id === LIKED_ID || counted.current.has(playlist.id)) return;
+    counted.current.add(playlist.id);
+
+    setCounting(true);
+    void fetchPlaylistTotal(playlist.id)
+      .then((total) => {
+        if (!alive.current) return;
+        setPlaylists((prev) =>
+          prev ? prev.map((p) => (p.id === playlist.id ? { ...p, total } : p)) : prev,
+        );
+      })
+      .catch((e) => {
+        // the deck does not depend on this count — surface the reason and move on
+        console.warn("[songless] contagem falhou", playlist.id, e);
+        if (alive.current) setCountError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (alive.current) setCounting(false);
+      });
+  };
+
+  const toggle = (playlist: SpotifyPlaylist) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      next.has(playlist.id) ? next.delete(playlist.id) : next.add(playlist.id);
       return next;
     });
+    countIfNeeded(playlist);
+  };
 
   return (
     <main className="mx-auto max-w-4xl px-4 pb-32 pt-8">
@@ -180,7 +184,7 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
               return (
                 <li key={playlist.id}>
                   <button
-                    onClick={() => toggle(playlist.id)}
+                    onClick={() => toggle(playlist)}
                     aria-pressed={active}
                     className={`card group w-full overflow-hidden p-3 text-left transition ${
                       active
@@ -219,7 +223,7 @@ export function PlaylistPicker({ error, onPlay, onAuthLost, onSignOut }: Props) 
                         ? `${playlist.total} ${playlist.total === 1 ? "faixa" : "faixas"}`
                         : counting
                           ? "contando…"
-                          : "0 faixas"}
+                          : "? faixas"}
                       {playlist.owner ? ` · ${playlist.owner}` : ""}
                     </p>
                   </button>

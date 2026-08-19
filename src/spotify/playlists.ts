@@ -16,16 +16,23 @@ interface Paged<T> {
   next: string | null;
 }
 
-/** Every playlist of the logged-in user, following pagination. */
-export async function fetchAllPlaylists(): Promise<SpotifyPlaylist[]> {
+/**
+ * Every playlist of the logged-in user, following pagination.
+ * `onPage` receives each page as it lands, so a failure halfway through
+ * (a 429, typically) still leaves the caller with the playlists already read.
+ */
+export async function fetchAllPlaylists(
+  onPage?: (batch: SpotifyPlaylist[]) => void,
+): Promise<SpotifyPlaylist[]> {
   let url: string | null = `${API}/me/playlists?limit=50`;
   const out: SpotifyPlaylist[] = [];
 
   while (url) {
     const page: Paged<any> = await spotifyGet<Paged<any>>(url);
+    const batch: SpotifyPlaylist[] = [];
     for (const p of page.items ?? []) {
       if (!p?.id) continue;
-      out.push({
+      batch.push({
         id: p.id,
         name: p.name ?? "(sem nome)",
         imageUrl: p.images?.[0]?.url ?? "",
@@ -33,6 +40,8 @@ export async function fetchAllPlaylists(): Promise<SpotifyPlaylist[]> {
         owner: p.owner?.display_name ?? "",
       });
     }
+    out.push(...batch);
+    if (batch.length > 0) onPage?.(batch);
     url = page.next;
   }
 
